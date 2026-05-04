@@ -37,14 +37,13 @@ class Encoder:
                 dct_block = dct(dct(block.T, norm='ortho').T, norm='ortho')
                 quantized = np.round(dct_block / self.quantization_table).astype(int)
                 blocks.append(quantized)
-
         return blocks
 
-    def _blocks_to_symbols(self, all_frames):
+    def blocks_to_symbols(self, all_frames):
         symbols = []
         for blocks in all_frames:
             for block in blocks:
-                flat = block.flatten()  # zigzag would go here ideally
+                flat = block.flatten()  
                 run = 0
                 for coeff in flat:
                     if coeff == 0:
@@ -52,26 +51,23 @@ class Encoder:
                     else:
                         symbols.append(('RLE', run, int(coeff)))
                         run = 0
-                symbols.append('EOB')  # end of block
-        symbols.append('<EOM>')        # end of message — required by ArithmeticEncoder
+                symbols.append('EOB')  
+        symbols.append('<EOM>')        
         return symbols
 
     def _build_frequencies(self, symbols):
         """Build frequency dict from symbols. ArithmeticEncoder needs this."""
         freq = dict(Counter(symbols))
-        # Ensure <EOM> is always present
         if '<EOM>' not in freq:
             freq['<EOM>'] = 1
         return freq
 
     def encode(self):
-        # ── Process all frames ────────────────────────────────────────────────
         all_frames = []
         for frame in self.frames:
             blocks = self.process_frame(frame)
             all_frames.append(blocks)
 
-        # ── Huffman ───────────────────────────────────────────────────────────
         if self.coding_method == 'huffman':
             flat_blocks = np.concatenate(
                 [np.array(b).flatten() for b in all_frames]
@@ -80,17 +76,11 @@ class Encoder:
             encoded_data = codec.encode(flat_blocks)
             return encoded_data, codec
 
-        # ── Arithmetic ────────────────────────────────────────────────────────
         elif self.coding_method == 'arithmetic':
-            symbols = self._blocks_to_symbols(all_frames)
+            symbols = self.blocks_to_symbols(all_frames)
             frequencies = self._build_frequencies(symbols)
-
-            # bits=16 gives enough precision for typical coefficient distributions.
-            # Raise to 20+ if you get "Insufficient precision" errors on large videos.
             encoder = ArithmeticEncoder(frequencies=frequencies, bits=16)
             bits = list(encoder.encode(iter(symbols)))
-
-            # Return bits + everything the decoder needs to reconstruct
             metadata = {
                 'frequencies': frequencies,
                 'bits': 16,
