@@ -1,7 +1,6 @@
 import cv2
 import numpy as np
 from scipy.fftpack import dct
-import matplotlib.pyplot as plt
 import dahuffman
 from arithmetic_coding import ArithmeticEncoder
 from collections import Counter
@@ -10,10 +9,10 @@ class Encoder:
     def __init__(self, video_path, block_size, quantization_table, coding_method, search_range=8):
         self.video_path = video_path
         self.block_size = block_size
-        self.quantization_table = quantization_table  
+        self.quantization_table = quantization_table
         self.coding_method = coding_method
         self.search_range = search_range
-        
+
         self.video = cv2.VideoCapture(self.video_path)
         frames = []
         while True:
@@ -40,7 +39,7 @@ class Encoder:
                 blocks.append(quantized)
         return blocks
 
-    def motion_estimate(self, current_frame, reference_frame):  
+    def motion_estimate(self, current_frame, reference_frame):
         h, w = current_frame.shape
         motion_vectors = []
         residual_blocks = []
@@ -73,29 +72,6 @@ class Encoder:
                     best_block = ref_block
 
         return best_mv, best_block
-    
-    def blocks_to_symbols(self, all_frames):
-        symbols = []
-        for blocks in all_frames:
-            for block in blocks:
-                flat = block.flatten()  
-                run = 0
-                for coeff in flat:
-                    if coeff == 0:
-                        run += 1
-                    else:
-                        symbols.append(('RLE', run, int(coeff)))
-                        run = 0
-                symbols.append('EOB')  
-        symbols.append('<EOM>')        
-        return symbols
-
-    def _build_frequencies(self, symbols):
-        """Build frequency dict from symbols. ArithmeticEncoder needs this."""
-        freq = dict(Counter(symbols))
-        if '<EOM>' not in freq:
-            freq['<EOM>'] = 1
-        return freq
 
     def process_residuals(self, residual_blocks):
         processed = []
@@ -105,38 +81,59 @@ class Encoder:
             quantized = np.round(dct_block / self.quantization_table).astype(int)
             processed.append(quantized)
         return processed
-    
+
+    def blocks_to_symbols(self, all_frames):
+        symbols = []
+        for blocks in all_frames:
+            for block in blocks:
+                flat = block.flatten()
+                run = 0
+                for coeff in flat:
+                    if coeff == 0:
+                        run += 1
+                    else:
+                        symbols.append(('RLE', run, int(coeff)))
+                        run = 0
+                symbols.append('EOB')
+        symbols.append('<EOM>')
+        return symbols
+
+    def _build_frequencies(self, symbols):
+        freq = dict(Counter(symbols))
+        if '<EOM>' not in freq:
+            freq['<EOM>'] = 1
+        return freq
+
     def encode(self):
         all_frames = []
-        motion_vectors_all = []
+        motion_vectors_all = [None]  
+
         for idx in range(len(self.frames)):
             if idx == 0:
-                frame = self.frames[idx]
-                blocks = self.process_frame(frame)
+                blocks = self.process_frame(self.frames[idx])
                 all_frames.append(blocks)
             else:
-                current_frame = self.frames[idx]
-                reference_frame = self.frames[idx - 1]
-                motion_vectors, residual_blocks = self.motion_estimate(current_frame, reference_frame)
+                motion_vectors, residual_blocks = self.motion_estimate(
+                    self.frames[idx], self.frames[idx - 1]
+                )
                 motion_vectors_all.append(motion_vectors)
-                all_frames.append(residual_blocks)
-            
+                all_frames.append(self.process_residuals(residual_blocks))
+
         if self.coding_method == 'huffman':
             flat_blocks = np.concatenate(
                 [np.array(b).flatten() for b in all_frames]
             ).flatten()
-            codec = dahuffman.HuffmanCodec.from_data(flat_blocks)
-            encoded_data = codec.encode(flat_blocks)
-            return encoded_data, codec, motion_vectors_all
+            huffman_codec = dahuffman.HuffmanCodec.from_data(flat_blocks)
+            encoded_data = huffman_codec.encode(flat_blocks)
+            return encoded_data, huffman_codec, motion_vectors_all
 
         elif self.coding_method == 'arithmetic':
             symbols = self.blocks_to_symbols(all_frames)
             frequencies = self._build_frequencies(symbols)
-            encoder = ArithmeticEncoder(frequencies=frequencies, bits=16)
-            bits = list(encoder.encode(iter(symbols)))
+            arithmetic_codec = ArithmeticEncoder(frequencies=frequencies, bits=16)
+            bits = list(arithmetic_codec.encode(iter(symbols)))
             metadata = {
                 'frequencies': frequencies,
-                'bits': 16,
                 'frame_count': len(self.frames),
                 'frame_shape': self.frames[0].shape,
                 'block_size': self.block_size,
@@ -145,4 +142,4 @@ class Encoder:
             return bits, metadata, motion_vectors_all
 
         else:
-            raise ValueError(f"Unknown coding_method: {self.coding_method!r}. "f"Use 'huffman' or 'arithmetic'.")
+            raise ValueError(f"Unknown coding_method: {self.coding_method!r}. " f"Use 'huffman' or 'arithmetic'.")
